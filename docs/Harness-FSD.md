@@ -2202,7 +2202,10 @@ wt.ble_disconnect()
 ### FR-029 — MQTT Broker
 
 An on-demand mosquitto broker for testing DUT MQTT clients, backed by
-`mqtt_controller.py`. The broker is open (anonymous, no auth) and listens on
+`mqtt_controller.py`. By default the broker is open (anonymous, no auth); started
+with a `username` and `password` it refuses anonymous clients and accepts only
+that one account, so a DUT's MQTT authentication — right credentials accepted,
+wrong or missing ones refused — can be tested. It listens on
 all interfaces at port 1883, so it is reachable both from the testbench AP
 (`192.168.4.1:1883`) and from the Pi's LAN address (`192.168.0.x:1883`) — a
 DUT on a NAT-bridged AP (FR-011) reaching the LAN address exercises the full
@@ -2210,11 +2213,14 @@ provisioned network path.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | /api/mqtt/status | `{running, port}` |
-| POST | /api/mqtt/start | Start the broker (idempotent); returns `{port}`. Fails with the listener named if port 1883 is held by a broker this service did not start |
+| GET | /api/mqtt/status | `{running, port, auth}` |
+| POST | /api/mqtt/start | Start the broker; returns `{port, auth}`. Body optional: `{username, password}` starts it password-only (`allow_anonymous false`, one account, hashed into a 0600 password file under the broker's work directory). An open start of a running open broker is a no-op; any other start restarts it, so retained messages are lost. Credentials must be 1–64 characters without line breaks, and the username without `:` — otherwise `400`. Fails with the listener named if port 1883 is held by a broker this service did not start |
 | POST | /api/mqtt/stop | Stop the broker |
 
 The broker is a portal-managed subprocess and stops when the portal restarts.
+The password is handed to `mosquitto_passwd -b` on its command line while the
+hash is made, so it is briefly visible to local users of the Pi: use throw-away
+test credentials only.
 
 Start reclaims the port from a **previous test broker** left behind by a portal
 restart, matching only processes launched with this service's own config path.
@@ -3656,6 +3662,8 @@ Add `--run-dut` to include tests that require a WiFi device under test.
 | WT-2000 | MQTT broker start reports running + port 1883 | MQTT Broker | No |
 | WT-2001 | MQTT broker status when stopped | MQTT Broker | No |
 | WT-2002 | MQTT broker start is idempotent | MQTT Broker | No |
+| WT-2005 | Auth broker refuses anonymous and wrong password, accepts its account | MQTT Broker | No |
+| WT-2006 | Open start after an auth start reopens the broker | MQTT Broker | No |
 | WT-2100 | Captive-portal provisioning of a WiFiManager DUT | Captive Portal | Yes |
 | WT-2101 | Provisioned DUT joins the testbench AP (appears as station) | Captive Portal | Yes |
 | WT-2102 | NAT-bridged AP: DUT reaches the LAN broker (192.168.0.x MQTT) | Captive Portal | Yes |
@@ -3729,6 +3737,7 @@ Add `--run-dut` to include tests that require a WiFi device under test.
 | 9.4 | 2026-07-05 | Claude | SDR (FR-028) gains: fixed-gain (`-g`) + `peak_freq_hz`/`notch_hz` on power; phased `acquire` (locate→level→decode→classify) with `tools/sdr_acquire.py` CLI and live activity-log prompts; the interactive **live console** (persistent `rtl_433`, ring-buffer fast-poll `/api/sdr/live*`, RSSI meter, presets, `-A` in every mode so the signal meter is decode-independent); **AI Sherlock** session log (`/api/sdr/log*`) for AI reverse-engineering of unknown remotes; USB self-heal + `/api/sdr/reset`; and an `rtl_433` device database (`pi/config/rtl_433.conf`) shipping one worked-example decoder. New skill `sdr-receiver`. |
 | 9.5 | 2026-08-03 | Claude | MCP surface completed to 70 tools — added `firmware_upload/delete`, `udplog_get/clear`, `debug_group`, `test_update`, `wifi_events`, `human_interaction/done/cancel`; `DELETE` added as a transport method. Only the two udev callbacks (`/api/hotplug`, `/api/wifi/lease_event`) remain unexposed. |
 | 10.0 | 2026-08-03 | Claude | Documentation consolidated to two documents: this FSD (WHAT) and the User Manual (HOW). The separate user manual, WiFi HTTP manual, skill-testing guide, and the `pi/` and `mcp/` READMEs merged into `Harness-User-Manual.md`; root `README.md` reduced to a landing page. FSD sections regrouped by subsystem — FR-017–FR-021 out of "WiFi Service" into §5, BLE + MQTT into §6, the three GDB specs into §7, signal generator + SDR into §8, and the MCP interface promoted out of FR-006 into §9. FR numbers and clause text unchanged. |
+| 10.1 | 2026-11-18 | Claude | MQTT test broker (FR-029) gains optional password-only mode: `POST /api/mqtt/start {username, password}` refuses anonymous clients and accepts only that account; `status` reports `auth`. Lets a DUT's MQTT authentication be verified. Test cases WT-2005–2006; host tests for the config and credential rules. |
 
 ---
 
@@ -4113,8 +4122,8 @@ RFC2217 flashing (esptool from the host) needs no endpoint (§6.7).
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/mqtt/start` · `/stop` | Start / stop the mosquitto test broker |
-| GET | `/api/mqtt/status` | Running state + port |
+| POST | `/api/mqtt/start` · `/stop` | Start (open, or password-only with `{"username", "password"}`) / stop the mosquitto test broker |
+| GET | `/api/mqtt/status` | Running state, port, `auth` |
 
 ### D.13 Test Progress & Human Interaction
 

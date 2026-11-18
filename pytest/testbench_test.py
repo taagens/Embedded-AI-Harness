@@ -10,6 +10,7 @@ import os
 import re
 import socket
 import time
+import threading
 import uuid
 
 import pytest
@@ -786,6 +787,62 @@ class TestMqttBroker:
         finally:
             testbench.mqtt_start()      # shared infrastructure; put it back
         assert refused, f"{host}:1883 still accepts connections after stop"
+
+    def test_wt2005_auth_broker_accepts_only_its_account(self, testbench):
+        """WT-2005: started with a username and password, the broker refuses an
+        anonymous client and a wrong password, and carries a message for the
+        right account.
+
+        This is what lets a DUT's MQTT authentication be tested at all: on an
+        open broker a client that sends no credentials, or the wrong ones,
+        connects just as well as one that sends the right ones.
+        """
+        user, pw = "wt2005", f"pw-{uuid.uuid4().hex[:12]}"
+        r = testbench.mqtt_start(user, pw)
+        try:
+            assert r.get("ok") is True and r.get("auth") is True, r
+            assert testbench.mqtt_status().get("auth") is True
+            host = testbench.info()["host_ip"]
+            assert self._connect_rc(host, None, None) != 0, "anonymous client accepted"
+            assert self._connect_rc(host, user, pw + "x") != 0, "wrong password accepted"
+            assert self._connect_rc(host, user, pw) == 0, "right account refused"
+        finally:
+            testbench.mqtt_start()   # shared infrastructure; back to open
+        assert testbench.mqtt_status().get("auth") is False
+
+    def test_wt2006_open_start_after_auth_reopens_the_broker(self, testbench):
+        """WT-2006: a plain start after an auth start returns to the open broker —
+        a later test that expects anonymous access must not inherit a password."""
+        testbench.mqtt_start("wt2006", f"pw-{uuid.uuid4().hex[:12]}")
+        r = testbench.mqtt_start()
+        assert r.get("ok") is True and r.get("auth") is False, r
+        host = testbench.info()["host_ip"]
+        assert self._connect_rc(host, None, None) == 0, "open broker refused an anonymous client"
+
+    @staticmethod
+    def _connect_rc(host, user, pw, timeout=10):
+        """CONNACK reason code of one connect attempt (0 = accepted)."""
+        try:
+            import paho.mqtt.client as mqtt
+        except ImportError:
+            pytest.skip("precondition unmet: paho-mqtt not installed here")
+        done, rc = threading.Event(), {"v": None}
+
+        def on_connect(_c, _u, _f, reason, _p=None):
+            rc["v"] = reason.value if hasattr(reason, "value") else int(reason)
+            done.set()
+
+        c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"wt-auth-{uuid.uuid4().hex[:6]}")
+        if user is not None:
+            c.username_pw_set(user, pw)
+        c.on_connect = on_connect
+        c.connect(host, 1883, keepalive=10)
+        c.loop_start()
+        done.wait(timeout)
+        c.loop_stop()
+        c.disconnect()
+        assert rc["v"] is not None, f"no CONNACK from {host}:1883 within {timeout} s"
+        return rc["v"]
 
     @staticmethod
     def _roundtrip(host, topic, payload, timeout):

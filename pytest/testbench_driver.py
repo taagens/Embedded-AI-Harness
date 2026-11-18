@@ -236,9 +236,11 @@ class TestbenchDriver:
 
     # ── MQTT broker (FR-029) ──────────────────────────────────────────
 
-    def mqtt_start(self) -> dict:
-        """Start the testbench mosquitto test broker (open, all interfaces)."""
-        return self._api_post("/api/mqtt/start", {}, timeout=15)
+    def mqtt_start(self, username: str | None = None, password: str | None = None) -> dict:
+        """Start the testbench mosquitto test broker on all interfaces — open,
+        or password-only when `username`/`password` are given (FR-029)."""
+        body = {"username": username, "password": password} if username is not None else {}
+        return self._api_post("/api/mqtt/start", body, timeout=15)
 
     def mqtt_stop(self) -> None:
         self._api_post("/api/mqtt/stop", {}, timeout=10)

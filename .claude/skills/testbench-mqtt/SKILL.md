@@ -32,8 +32,12 @@ Request and response shapes: [FSD Appendix D.12](../../../docs/Harness-FSD.md#d1
 ## Examples
 
 ```bash
-# Start the MQTT broker
+# Start the MQTT broker (open)
 curl -X POST $TESTBENCH_URL/api/mqtt/start
+
+# Start it password-only: anonymous clients and wrong passwords are refused
+curl -X POST $TESTBENCH_URL/api/mqtt/start \
+  -H 'Content-Type: application/json' -d '{"username": "dut", "password": "<test-only>"}'
 
 # Check broker status
 curl $TESTBENCH_URL/api/mqtt/status
@@ -48,7 +52,7 @@ curl -X POST $TESTBENCH_URL/api/mqtt/stop
 |----------|-------|
 | Broker | the bench address (from the LAN) or `192.168.4.1` (from the testbench AP) |
 | Default port | `1883` |
-| Authentication | None (open broker for testing) |
+| Authentication | None by default; password-only when started with `{username, password}` (one account; `status.auth` tells which). Throw-away credentials only — the password passes through `mosquitto_passwd -b` on the Pi's command line |
 
 ## Common Workflows
 

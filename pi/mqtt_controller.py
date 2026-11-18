@@ -2,7 +2,9 @@
 MQTT Controller — manages a mosquitto broker for ESP32 MQTT client testing.
 
 Used by the portal to start/stop a local MQTT broker accessible to devices
-on the testbench WiFi AP.
+on the testbench WiFi AP. Open (anonymous) by default; started with a username
+and password it refuses anonymous clients and accepts only that account, so a
+DUT's MQTT authentication can be tested (FR-029).
 """
 
 import logging
@@ -21,6 +23,8 @@ MQTT_PORT = 1883
 WORK_DIR = "/tmp/mqtt-tester"
 MOSQUITTO_CONF = os.path.join(WORK_DIR, "mosquitto.conf")
 MOSQUITTO_LOG = os.path.join(WORK_DIR, "mosquitto.log")
+PASSWORD_FILE = os.path.join(WORK_DIR, "passwd")
+MAX_CREDENTIAL_LEN = 64
 
 # ---------------------------------------------------------------------------
 # Module state
@@ -29,11 +33,54 @@ MOSQUITTO_LOG = os.path.join(WORK_DIR, "mosquitto.log")
 _lock = threading.Lock()
 _active = False
 _proc = None
+_auth_user = None   # username the running broker requires, or None when open
+
+
+# ---------------------------------------------------------------------------
+# Pure helpers (host-tested: pytest/host/test_mqtt_controller.py)
+# ---------------------------------------------------------------------------
+
+def config_lines(port, log_path, password_file=None):
+    """mosquitto.conf lines: open broker, or password-only when a file is given."""
+    lines = [f"listener {port}"]
+    if password_file:
+        lines += ["allow_anonymous false", f"password_file {password_file}"]
+    else:
+        lines.append("allow_anonymous true")
+    return lines + [f"log_dest file {log_path}", "log_type all"]
+
+
+def validate_credentials(username, password):
+    """Raise ValueError unless both fit one `user:hash` line of a password file."""
+    for name, value in (("username", username), ("password", password)):
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{name} must be a non-empty string")
+        if len(value) > MAX_CREDENTIAL_LEN:
+            raise ValueError(f"{name} longer than {MAX_CREDENTIAL_LEN} characters")
+        if any(c in value for c in "\r\n\0"):
+            raise ValueError(f"{name} contains a line break or NUL")
+    if ":" in username:
+        raise ValueError("username must not contain ':'")
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _write_password_file(username, password):
+    """Create PASSWORD_FILE (0600) holding one hashed account."""
+    if os.path.exists(PASSWORD_FILE):
+        os.remove(PASSWORD_FILE)
+    fd = os.open(PASSWORD_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(fd)
+    # -b takes the password on the command line: visible to local users of the
+    # Pi for the moment the hash is computed. Acceptable for throw-away test
+    # credentials; never pass a real password here.
+    r = subprocess.run(["mosquitto_passwd", "-b", PASSWORD_FILE, username, password],
+                       capture_output=True, timeout=15, check=False)
+    if r.returncode != 0:
+        raise RuntimeError(f"mosquitto_passwd failed: {r.stderr.decode(errors='replace')[:200]}")
+
 
 def _ensure_work_dir():
     os.makedirs(WORK_DIR, exist_ok=True)
@@ -94,13 +141,27 @@ def _port_owner() -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
-def start():
-    """Start the mosquitto MQTT broker. Returns dict with port."""
-    global _active, _proc
+def start(username=None, password=None):
+    """Start the mosquitto MQTT broker. Returns dict with port and auth.
 
+    With `username` and `password` the broker refuses anonymous clients and
+    accepts only that account; without them it is open. Asking for a different
+    mode (or account) than the running broker has restarts it — retained
+    messages do not survive that.
+    """
+    global _active, _proc, _auth_user
+
+    if username is not None or password is not None:
+        validate_credentials(username, password)
     with _lock:
-        if _active and _proc is not None and _proc.poll() is None:
-            return {"port": MQTT_PORT}
+        running = _active and _proc is not None and _proc.poll() is None
+        if running and username is None and _auth_user is None:
+            return {"port": MQTT_PORT, "auth": False}
+        if running:
+            # an auth broker is always restarted: the password may have changed
+            _kill_proc(_proc)
+            _proc = None
+            _active = False
 
         _ensure_work_dir()
         _kill_existing()
@@ -114,13 +175,12 @@ def start():
                 f"port {MQTT_PORT} is already in use by a broker this service did "
                 f"not start; stop it first. Listener: {owner}")
 
-        # Write mosquitto config — open broker, no auth, listen on all interfaces
-        conf_lines = [
-            f"listener {MQTT_PORT}",
-            "allow_anonymous true",
-            f"log_dest file {MOSQUITTO_LOG}",
-            "log_type all",
-        ]
+        # Write mosquitto config — listen on all interfaces, open or password-only
+        if username is not None:
+            _write_password_file(username, password)
+            conf_lines = config_lines(MQTT_PORT, MOSQUITTO_LOG, PASSWORD_FILE)
+        else:
+            conf_lines = config_lines(MQTT_PORT, MOSQUITTO_LOG)
         with open(MOSQUITTO_CONF, "w") as f:
             f.write("\n".join(conf_lines) + "\n")
 
@@ -138,18 +198,21 @@ def start():
             raise RuntimeError(f"mosquitto failed to start: {out[:500]}")
 
         _active = True
-        logger.info("MQTT broker started on port %d", MQTT_PORT)
-        return {"port": MQTT_PORT}
+        _auth_user = username
+        logger.info("MQTT broker started on port %d (%s)", MQTT_PORT,
+                    f"auth: user {username}" if username else "open")
+        return {"port": MQTT_PORT, "auth": username is not None}
 
 
 def stop():
     """Stop the mosquitto broker."""
-    global _active, _proc
+    global _active, _proc, _auth_user
 
     with _lock:
         _kill_proc(_proc)
         _proc = None
         _active = False
+        _auth_user = None
         logger.info("MQTT broker stopped")
 
 
@@ -165,4 +228,5 @@ def status():
         return {
             "running": running,
             "port": MQTT_PORT if running else None,
+            "auth": running and _auth_user is not None,
         }

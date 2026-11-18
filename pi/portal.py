@@ -2901,8 +2901,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/sdr/stop":
             self._handle_sdr_stop()
         elif path == "/api/mqtt/start":
+            body = self._read_json() or {}
             try:
-                self._send_json({"ok": True, **mqtt_controller.start()})
+                res = mqtt_controller.start(body.get("username"), body.get("password"))
+                log_activity("MQTT broker started" + (" (password auth)" if res.get("auth") else ""), "ok")
+                self._send_json({"ok": True, **res})
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, 400)
             except Exception as exc:
                 self._send_json({"ok": False, "error": str(exc)}, 500)
         elif path == "/api/mqtt/stop":

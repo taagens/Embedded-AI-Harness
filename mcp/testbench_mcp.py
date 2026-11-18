@@ -170,7 +170,10 @@ SPECS = [
                  slot=S_STR, resets=S_INT), timeout=40),
 
     dict(name="mqtt_status", method="GET", path="/api/mqtt/status", desc="Test broker state."),
-    dict(name="mqtt_start", method="POST", path="/api/mqtt/start", desc="Start the mosquitto test broker."),
+    dict(name="mqtt_start", method="POST", path="/api/mqtt/start",
+         desc="Start the mosquitto test broker: open by default; with username+password it "
+              "refuses anonymous clients and accepts only that account (restarts a running broker).",
+         props=p(username=S_STR, password=S_STR)),
     dict(name="mqtt_stop", method="POST", path="/api/mqtt/stop", desc="Stop the test broker."),
 
     dict(name="tls_mirror_status", method="GET", path="/api/tls-mirror/status", desc="Untrusted HTTPS mirror state and certificate SHA-256."),
