@@ -67,6 +67,16 @@ def validate_credentials(username, password):
 # Helpers
 # ---------------------------------------------------------------------------
 
+def broker_user(name="mosquitto"):
+    """(uid, gid) mosquitto drops privileges to when started as root, or None."""
+    try:
+        import pwd
+        pw = pwd.getpwnam(name)
+        return pw.pw_uid, pw.pw_gid
+    except (ImportError, KeyError):
+        return None
+
+
 def _write_password_file(username, password):
     """Create PASSWORD_FILE (0600) holding one hashed account."""
     if os.path.exists(PASSWORD_FILE):
@@ -80,6 +90,12 @@ def _write_password_file(username, password):
                        capture_output=True, timeout=15, check=False)
     if r.returncode != 0:
         raise RuntimeError(f"mosquitto_passwd failed: {r.stderr.decode(errors='replace')[:200]}")
+    # Started as root, mosquitto drops to its own user before it opens the
+    # password file; a 0600 root-owned file is then unreadable ("Unable to open
+    # pwfile", seen on the bench 2026-11-18). Hand the file to that user.
+    owner = broker_user() if os.geteuid() == 0 else None
+    if owner:
+        os.chown(PASSWORD_FILE, owner[0], owner[1])
 
 
 def _ensure_work_dir():
