@@ -248,6 +248,18 @@ class TestbenchDriver:
     def mqtt_status(self) -> dict:
         return self._api_get("/api/mqtt/status")
 
+    def mqtt_subscriptions(self, since: float | None = None, address: str | None = None) -> list:
+        """Topic filters clients subscribed to on the test broker (FR-041):
+        `[{ts, client, address, topic, qos}]`, at or after `since` (Pi epoch
+        seconds), only from `address` when given."""
+        params = {}
+        if since is not None:
+            params["since"] = since
+        if address:
+            params["address"] = address
+        q = ("?" + "&".join(f"{k}={v}" for k, v in params.items())) if params else ""
+        return self._api_get(f"/api/mqtt/subscriptions{q}").get("subscriptions", [])
+
     # ── Untrusted HTTPS mirror (FR-038) ───────────────────────────────
 
     def tls_mirror_start(self) -> dict:

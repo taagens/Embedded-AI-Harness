@@ -9,6 +9,7 @@ DUT's MQTT authentication can be tested (FR-029).
 
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -25,6 +26,7 @@ MOSQUITTO_CONF = os.path.join(WORK_DIR, "mosquitto.conf")
 MOSQUITTO_LOG = os.path.join(WORK_DIR, "mosquitto.log")
 PASSWORD_FILE = os.path.join(WORK_DIR, "passwd")
 MAX_CREDENTIAL_LEN = 64
+SUBSCRIPTION_LOG_TAIL = 8 * 1024 * 1024   # bytes of the broker log read per query
 
 # ---------------------------------------------------------------------------
 # Module state
@@ -48,6 +50,51 @@ def config_lines(port, log_path, password_file=None):
     else:
         lines.append("allow_anonymous true")
     return lines + [f"log_dest file {log_path}", "log_type all"]
+
+
+_CONNECT_RE = re.compile(r"New client connected from (\S+?):\d+ as (\S+) \(")
+_SUB_TOPIC_RE = re.compile(r"\t(.+) \(QoS (\d)\)$")
+
+
+def parse_subscriptions(lines, since=0.0, address=None):
+    """SUBSCRIBE records in a mosquitto log written with `log_type all` (FR-041).
+
+    Mosquitto logs a SUBSCRIBE as `<epoch>: Received SUBSCRIBE from <client>`
+    followed by one `<epoch>: \\t<filter> (QoS <n>)` line per topic filter. The
+    client's address comes from its latest `New client connected from <ip>:<port>
+    as <client> (...)` line. Returns `[{ts, client, address, topic, qos}]` in log
+    order, keeping records at or after `since` and, when given, from `address`.
+
+    Only these fields leave the log: the connect line can also name the MQTT
+    username, and no other part of the log is returned.
+    """
+    clients, out, cur = {}, [], None
+    for raw in lines:
+        head, sep, msg = raw.rstrip("\r\n").partition(": ")
+        if not sep:
+            continue
+        try:
+            ts = float(head)
+        except ValueError:
+            continue
+        m = _CONNECT_RE.match(msg)
+        if m:
+            clients[m.group(2)] = m.group(1).strip("[]")
+            cur = None
+            continue
+        if msg.startswith("Received SUBSCRIBE from "):
+            cur = msg[len("Received SUBSCRIBE from "):].strip()
+            continue
+        if msg.startswith("Received ") or msg.startswith("Sending SUBACK"):
+            cur = None
+            continue
+        t = _SUB_TOPIC_RE.match(msg)
+        if t and cur is not None:
+            rec = {"ts": ts, "client": cur, "address": clients.get(cur),
+                   "topic": t.group(1), "qos": int(t.group(2))}
+            if ts >= since and (address is None or rec["address"] == address):
+                out.append(rec)
+    return out
 
 
 def validate_credentials(username, password):
@@ -246,3 +293,20 @@ def status():
             "port": MQTT_PORT if running else None,
             "auth": running and _auth_user is not None,
         }
+
+
+def subscriptions(since=0.0, address=None):
+    """SUBSCRIBE records from the broker's log (FR-041); [] when there is none.
+
+    The log is kept across broker restarts, so `since` (Pi epoch seconds)
+    selects the records of one test.
+    """
+    try:
+        with open(MOSQUITTO_LOG, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - SUBSCRIPTION_LOG_TAIL))
+            data = f.read().decode(errors="replace")
+    except FileNotFoundError:
+        return []
+    return parse_subscriptions(data.splitlines(), since, address)

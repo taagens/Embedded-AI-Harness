@@ -819,6 +819,39 @@ class TestMqttBroker:
         host = testbench.info()["host_ip"]
         assert self._connect_rc(host, None, None) == 0, "open broker refused an anonymous client"
 
+    def test_wt2007_subscriptions_name_each_topic_filter(self, testbench):
+        """WT-2007: the broker reports which topic filters a client subscribed
+        to (FR-041) — what lets a DUT's subscription set be verified (no
+        wildcard, no foreign topic) without access to its MQTT traffic."""
+        try:
+            import paho.mqtt.client as mqtt
+        except ImportError:
+            pytest.skip("precondition unmet: paho-mqtt not installed here")
+        testbench.mqtt_start()
+        host = testbench.info()["host_ip"]
+        cid = f"wt2007-{uuid.uuid4().hex[:8]}"
+        topics = [(f"testbench/wt2007/{cid}/a", 1), (f"testbench/wt2007/{cid}/#", 0)]
+        acked = threading.Event()
+        c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=cid)
+        c.on_connect = lambda cl, *_: cl.subscribe(topics)
+        c.on_subscribe = lambda *_: acked.set()
+        c.connect(host, 1883, keepalive=10)
+        c.loop_start()
+        try:
+            assert acked.wait(15), "no SUBACK from the bench broker"
+            seen = []
+            for _ in range(10):
+                seen = [s for s in testbench.mqtt_subscriptions(since=time.time() - 300)
+                        if s["client"] == cid]
+                if len(seen) >= 2:
+                    break
+                time.sleep(0.5)
+        finally:
+            c.loop_stop()
+            c.disconnect()
+        assert sorted((s["topic"], s["qos"]) for s in seen) == sorted(topics), seen
+        assert all(s["address"] for s in seen), f"no client address: {seen}"
+
     @staticmethod
     def _connect_rc(host, user, pw, timeout=10):
         """CONNACK reason code of one connect attempt (0 = accepted)."""

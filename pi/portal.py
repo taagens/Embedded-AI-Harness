@@ -2775,6 +2775,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._send_json({"ok": True, **_sdr.get_log()})
         elif path == "/api/mqtt/status":
             self._send_json({"ok": True, **mqtt_controller.status()})
+        elif path == "/api/mqtt/subscriptions":
+            qs = parse_qs(parsed.query)
+            try:
+                since = float(qs.get("since", ["0"])[0])
+            except ValueError:
+                self._send_json({"ok": False, "error": "since must be epoch seconds"}, 400)
+                return
+            address = qs.get("address", [None])[0] or None
+            self._send_json({"ok": True, "subscriptions":
+                             mqtt_controller.subscriptions(since, address)})
         elif path == "/api/tls-mirror/status":
             self._send_json({"ok": True, **tls_mirror_controller.status()})
         elif path == "/api/udplog":

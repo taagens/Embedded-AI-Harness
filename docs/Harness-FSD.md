@@ -1408,6 +1408,7 @@ serial-interface mode.
 | GET | /api/mqtt/status | Broker running state + port (FR-029) |
 | POST | /api/mqtt/start | Start the mosquitto test broker (FR-029) |
 | POST | /api/mqtt/stop | Stop the broker (FR-029) |
+| GET | /api/mqtt/subscriptions | Topic filters clients subscribed to (FR-041) |
 | **Composite** | | |
 | GET | /api/log | Activity log (timestamped entries, filterable with `?since=`) |
 | POST | /api/enter-portal | Ensure device is connected to testbench AP — provision via captive portal if needed |
@@ -2216,11 +2217,25 @@ provisioned network path.
 | GET | /api/mqtt/status | `{running, port, auth}` |
 | POST | /api/mqtt/start | Start the broker; returns `{port, auth}`. Body optional: `{username, password}` starts it password-only (`allow_anonymous false`, one account, hashed into a 0600 password file under the broker's work directory). An open start of a running open broker is a no-op; any other start restarts it, so retained messages are lost. Credentials must be 1–64 characters without line breaks, and the username without `:` — otherwise `400`. Fails with the listener named if port 1883 is held by a broker this service did not start |
 | POST | /api/mqtt/stop | Stop the broker |
+| GET | /api/mqtt/subscriptions | `{subscriptions: [{ts, client, address, topic, qos}]}` — FR-041. Query: `since` (Pi epoch seconds, default 0), `address` (client IP) |
 
 The broker is a portal-managed subprocess and stops when the portal restarts.
 The password is handed to `mosquitto_passwd -b` on its command line while the
 hash is made, so it is briefly visible to local users of the Pi: use throw-away
 test credentials only.
+
+#### FR-041 — Subscription record
+
+A DUT's subscription set is part of its contract (it must not subscribe with a
+wildcard or to a topic it does not own), and no other instrument can observe
+it: only the broker sees a SUBSCRIBE. The broker logs every one (`log_type
+all`), and `GET /api/mqtt/subscriptions` returns them as
+`[{ts, client, address, topic, qos}]` — one record per topic filter, in log
+order. `ts` is the Pi's epoch seconds, `address` the client's IP from its
+latest connect. `since` selects one test's records (the log is kept across
+broker restarts; only its last 8 MiB are read); `address` selects one DUT.
+Nothing else from the log is returned — in particular not the MQTT username
+that the connect line names.
 
 Start reclaims the port from a **previous test broker** left behind by a portal
 restart, matching only processes launched with this service's own config path.
@@ -3664,6 +3679,7 @@ Add `--run-dut` to include tests that require a WiFi device under test.
 | WT-2002 | MQTT broker start is idempotent | MQTT Broker | No |
 | WT-2005 | Auth broker refuses anonymous and wrong password, accepts its account | MQTT Broker | No |
 | WT-2006 | Open start after an auth start reopens the broker | MQTT Broker | No |
+| WT-2007 | Subscriptions report each topic filter, QoS and client address | MQTT Broker | No |
 | WT-2100 | Captive-portal provisioning of a WiFiManager DUT | Captive Portal | Yes |
 | WT-2101 | Provisioned DUT joins the testbench AP (appears as station) | Captive Portal | Yes |
 | WT-2102 | NAT-bridged AP: DUT reaches the LAN broker (192.168.0.x MQTT) | Captive Portal | Yes |
@@ -3738,6 +3754,7 @@ Add `--run-dut` to include tests that require a WiFi device under test.
 | 9.5 | 2026-08-03 | Claude | MCP surface completed to 70 tools — added `firmware_upload/delete`, `udplog_get/clear`, `debug_group`, `test_update`, `wifi_events`, `human_interaction/done/cancel`; `DELETE` added as a transport method. Only the two udev callbacks (`/api/hotplug`, `/api/wifi/lease_event`) remain unexposed. |
 | 10.0 | 2026-08-03 | Claude | Documentation consolidated to two documents: this FSD (WHAT) and the User Manual (HOW). The separate user manual, WiFi HTTP manual, skill-testing guide, and the `pi/` and `mcp/` READMEs merged into `Harness-User-Manual.md`; root `README.md` reduced to a landing page. FSD sections regrouped by subsystem — FR-017–FR-021 out of "WiFi Service" into §5, BLE + MQTT into §6, the three GDB specs into §7, signal generator + SDR into §8, and the MCP interface promoted out of FR-006 into §9. FR numbers and clause text unchanged. |
 | 10.1 | 2026-11-18 | Claude | MQTT test broker (FR-029) gains optional password-only mode: `POST /api/mqtt/start {username, password}` refuses anonymous clients and accepts only that account; `status` reports `auth`. Lets a DUT's MQTT authentication be verified. Test cases WT-2005–2006; host tests for the config and credential rules. |
+| 10.2 | 2026-11-25 | Claude | Broker subscription record (FR-041): `GET /api/mqtt/subscriptions` returns the topic filters, QoS and address of each client SUBSCRIBE, parsed from the broker's own log, so a DUT's subscription set (no wildcard, no foreign topic) can be verified. Test case WT-2007; host tests for the parser. |
 
 ---
 
