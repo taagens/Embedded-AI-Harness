@@ -149,6 +149,21 @@ def _ensure_work_dir():
     os.makedirs(WORK_DIR, exist_ok=True)
 
 
+def _prepare_log_file():
+    """Create MOSQUITTO_LOG for the broker's user (FR-041).
+
+    Started as root, mosquitto drops to its own user before it opens the log
+    file, and cannot create one in the root-owned work directory: the broker
+    then runs with no log, and no subscription is ever recorded. The file is
+    appended to across restarts; `since` separates one test from the next.
+    """
+    if not os.path.exists(MOSQUITTO_LOG):
+        os.close(os.open(MOSQUITTO_LOG, os.O_WRONLY | os.O_CREAT, 0o644))
+    owner = broker_user() if os.geteuid() == 0 else None
+    if owner:
+        os.chown(MOSQUITTO_LOG, owner[0], owner[1])
+
+
 def _kill_proc(proc, timeout=5.0):
     """Terminate a subprocess, SIGKILL if it won't die."""
     if proc is None or proc.poll() is not None:
@@ -227,6 +242,7 @@ def start(username=None, password=None):
             _active = False
 
         _ensure_work_dir()
+        _prepare_log_file()
         _kill_existing()
 
         # If something still holds the port it is not ours, so refuse rather than
